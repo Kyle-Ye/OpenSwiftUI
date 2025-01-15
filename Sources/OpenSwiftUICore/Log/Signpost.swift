@@ -1,15 +1,15 @@
 //
 //  Signpost.swift
-//  OpenSwiftUI
+//  OpenSwiftUICore
 //
 //  Audited for iOS 18.0
 //  Status: WIP
-//  ID: 34756F646CF7AC3DBE2A8E0B344C962F (RELEASE_2021)
-//  ID: 59349949219F590F26B6A55CEC9D59A2 (RELEASE_2024)
+//  ID: 34756F646CF7AC3DBE2A8E0B344C962F (SwiftUI)
+//  ID: 59349949219F590F26B6A55CEC9D59A2 (SwiftUICore)
 
 import OpenSwiftUI_SPI
 import OpenGraphShims
-#if canImport(Darwin)
+#if canImport(os)
 package import os.signpost
 #endif
 
@@ -95,25 +95,24 @@ package struct Signpost {
     }
     
     package var isEnabled: Bool {
-        guard Stability.valid.contains(where: { $0 == stability }) else {
+        guard Stability.valid.contains(stability) else {
             return false
         }
         #if canImport(Darwin)
         switch style {
-        case let .kdebug(code):
-            return kdebug_is_enabled(UInt32(OSSignpostType.event.rawValue & 0xfc) | (UInt32(code) << 2) & 0x3fc | 0x14110000)
-        case .os_log:
-            guard kdebug_is_enabled(UInt32(OSSignpostType.event.rawValue & 0xfc) | 0x14110000) else {
-                return false
+            case let .kdebug(code):
+                return kdebug_is_enabled(MISC_INSTRUMENTS_DGB_CODE(type: .event, code: code))
+            case .os_log:
+                guard kdebug_is_enabled(MISC_INSTRUMENTS_DGB_CODE(type: .event)) else {
+                    return false
+                }
+                return _signpostLog.signpostsEnabled
             }
-            return _signpostLog.signpostsEnabled
-        }
         #else
-        return true
+        return false
         #endif
     }
     
-    // TODO
     @_transparent
     package func traceInterval<T>(
         object: AnyObject?,
@@ -126,19 +125,20 @@ package struct Signpost {
         #if canImport(Darwin)
         let id = OSSignpostID.makeExclusiveID(object)
         switch style {
-        case let .kdebug(code):
-            kdebug_trace(UInt32(code) << 2 | (UInt32(OSSignpostType.begin.rawValue & 0xfc) | 0x14110000), id.rawValue, 0, 0, 0)
-            defer { kdebug_trace(UInt32(code) << 2 | (UInt32(OSSignpostType.end.rawValue & 0xfc) | 0x14110000), id.rawValue, 0, 0, 0) }
-            return closure()
-        case let .os_log(name):
-            if let message {
-                os_signpost(.begin, log: _signpostLog, name: name, signpostID: id, message, [])
-            } else {
-                os_signpost(.begin, log: _signpostLog, name: name, signpostID: id)
+            case let .kdebug(code):
+                let code = MISC_INSTRUMENTS_DGB_CODE(type: .begin, code: code)
+                kdebug_trace(code, id.rawValue, 0, 0, 0)
+                defer { kdebug_trace(code, id.rawValue, 0, 0, 0) }
+                return closure()
+            case let .os_log(name):
+                if let message {
+                    os_signpost(.begin, log: _signpostLog, name: name, signpostID: id, message, [])
+                } else {
+                    os_signpost(.begin, log: _signpostLog, name: name, signpostID: id)
+                }
+                defer { os_signpost(.end, log: _signpostLog, name: name, signpostID: id) }
+                return closure()
             }
-            defer { os_signpost(.end, log: _signpostLog, name: name, signpostID: id) }
-            return closure()
-        }
         #else
         return closure()
         #endif
@@ -146,7 +146,7 @@ package struct Signpost {
     
     @_transparent
     package func traceInterval<T>(
-        object: AnyObject? = nil,
+        object: AnyObject?,
         _ message: StaticString,
         _ args: @autoclosure () -> [any CVarArg],
         closure: () -> T
@@ -157,14 +157,18 @@ package struct Signpost {
         #if canImport(Darwin)
         let id = OSSignpostID.makeExclusiveID(object)
         switch style {
-        case let .kdebug(code):
-            // FIXME: _primitive
-            print(code)
-            return closure()
-        case let .os_log(name):
-            os_signpost(.begin, log: _signpostLog, name: name, signpostID: id, message, args())
-            defer { os_signpost(.end, log: _signpostLog, name: name, signpostID: id) }
-            return closure()
+            case let .kdebug(code):
+                // FIXME: _primitive
+                // continuation
+                // _primitive
+                // withKDebugValues
+                _primitive(.end, log: _signpostLog, signpostID: id, message, args()) // FIXME
+                
+                return closure()
+            case let .os_log(name):
+                os_signpost(.begin, log: _signpostLog, name: name, signpostID: id, message, args())
+                defer { os_signpost(.end, log: _signpostLog, name: name, signpostID: id) }
+                return closure()
         }
         #else
         return closure()
@@ -186,12 +190,12 @@ package struct Signpost {
         let args = args()
 
         switch style {
-        case let .kdebug(code):
-            // FIXME: _primitive
-            print(code)
-            return
-        case let .os_log(name):
-            os_signpost(type, log: _signpostLog, name: name, signpostID: id, message, args)
+            case let .kdebug(code):
+                // FIXME: _primitive
+                print(code)
+                return
+            case let .os_log(name):
+                os_signpost(type, log: _signpostLog, name: name, signpostID: id, message, args)
         }
     }
     #endif
@@ -205,11 +209,18 @@ package struct Signpost {
         _ arguments: [any CVarArg]?
     ) {
         // TODO
+        
+//        let closure: ([UInt64]) -> () = { args in
+//            kdebug_trace(code, signpostID.rawValue, args[0], args[1], args[2])
+//        }
+        withKDebugValues(8, arguments ?? []) { args in
+            kdebug_trace(9, signpostID.rawValue, args[0], args[1], args[2])
+        }
     }
     #endif
 }
 
-#if canImport(Darwin)
+#if canImport(os)
 extension OSSignpostID {
     private static let continuation = OSSignpostID(0x0ea89ce2)
     
@@ -224,6 +235,96 @@ extension OSSignpostID {
 }
 #endif
 
+#if canImport(Darwin)
+
+// MARK: - kdebug
+
 private func withKDebugValues(_ code: UInt32, _ args: [(any CVarArg)?], closure: (([UInt64]) -> Void)) {
-    // TODO
+    let values = args.map { $0?.kdebugValue(code) }
+    closure(values.map { $0?.arg ?? 0 })
+    values.forEach { $0?.destructor?() }
 }
+
+private protocol KDebuggableCVarArg: CVarArg {
+    
+}
+
+extension CVarArg {
+    fileprivate func kdebugValue(_ code: UInt32) -> (arg: UInt64, destructor: (() -> Void)?) {
+        if let value = self as? KDebuggableCVarArg {
+            preconditionFailure("TODO")
+        } else {
+            let encoding = _cVarArgEncoding
+            if encoding.count == 1 {
+                return (UInt64(bitPattern: Int64(encoding[0])), nil)
+            } else {
+                let description = String(describing: self)
+                let moduleName = Signpost.moduleName
+                if description == moduleName {
+                    return (0, nil)
+                } else {
+                    // let id = kdebug_trace_string(<#T##debugid: UInt32##UInt32#>, <#T##str_id: UInt64##UInt64#>, <#T##str: UnsafePointer<CChar>!##UnsafePointer<CChar>!#>)
+                    preconditionFailure("TODO")
+                }
+                
+            }
+        }
+    }
+}
+
+// MARK: - kdebug macro helper
+
+@_transparent
+func KDBG_EVENTID(_ class: UInt32, _ subclass: UInt32, _ code: UInt32) -> UInt32 {
+    ((`class` & 0xff) << KDBG_CLASS_OFFSET) |
+    ((subclass & 0xff) << KDBG_SUBCLASS_OFFSET) |
+    ((code & 0x3fff) << KDBG_CODE_OFFSET)
+}
+
+@_transparent
+func KDBG_EXTRACT_CLASS(_ debugid: UInt32) -> UInt32 {
+    (debugid & KDBG_CLASS_MASK) >> KDBG_CLASS_OFFSET
+}
+
+@_transparent
+func KDBG_EXTRACT_SUBCLASS(_ debugid: UInt32) -> UInt32 {
+    (debugid & UInt32(bitPattern: KDBG_SUBCLASS_MASK)) >> KDBG_SUBCLASS_OFFSET
+}
+
+@_transparent
+func KDBG_EXTRACT_CODE(_ debugid: UInt32) -> UInt32 {
+    (debugid & UInt32(bitPattern: KDBG_CODE_MASK)) >> KDBG_CODE_OFFSET
+}
+
+@_transparent
+func KDBG_CLASS_ENCODE(_ class: UInt32, _ subclass: UInt32) -> UInt32 {
+    KDBG_EVENTID(`class`, subclass, 0)
+}
+
+@_transparent
+func KDBG_CLASS_DECODE(_ debugid: UInt32) -> UInt32 {
+    debugid & KDBG_CSC_MASK
+}
+
+@_transparent
+func MISCDGB_CODE(_ subclass: UInt32, _ code: UInt32) -> UInt32 {
+    KDBG_EVENTID(UInt32(bitPattern: DBG_MISC), subclass, code)
+}
+
+@_transparent
+func MISC_INSTRUMENTS_DGB_CODE(_ code: UInt32) -> UInt32 {
+    MISCDGB_CODE(UInt32(bitPattern: DBG_MISC_INSTRUMENTS), code)
+}
+
+@_transparent
+func MISC_INSTRUMENTS_DGB_CODE(type: OSSignpostType) -> UInt32 {
+    MISC_INSTRUMENTS_DGB_CODE(UInt32(type.rawValue))
+}
+
+@_transparent
+func MISC_INSTRUMENTS_DGB_CODE(type: OSSignpostType, code: UInt8) -> UInt32 {
+    MISC_INSTRUMENTS_DGB_CODE(UInt32(type.rawValue | code << 2))
+}
+
+
+#endif
